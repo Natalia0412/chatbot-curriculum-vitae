@@ -6,11 +6,17 @@ from langchain.schema import Document
 import unicodedata
 import os
 from langchain_community.vectorstores import FAISS
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.runnables import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+
 
 
 from langchain_openai import ChatOpenAI
 
 from langchain_core.runnables import Runnable
+
+memory_store = {}
 
 def load_pdf_pages(file: str):
     loader = PyPDFLoader(file)
@@ -143,25 +149,42 @@ def research_faiss(api_key: str, filter_to_db: str, question: str):
     context = "\n\n".join([doc.page_content for doc in docs])
     return context
 
-def api_chat(question: str, api_key: str, context: str):
-    print(context)
-    system = (f"""
-    Você é um assistente que responde somente perguntas sobre o curriculum vitae. 
-    Se a consulta não puder ser respondida com base no contexto fornecido ou se não souber a resposta, 
-    basta dizer que você não sabe  a resposta, não tente inventar uma resposta. Mantenha a resposta o mais concisa 
-    possível.
-    """)
 
-    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, openai_api_key=api_key, request_timeout=30)
+def api_chat_with_memory(question: str, context: str, session_id: str, api_key: str):
 
-    user = (f"contexto: {context} "
-            f"pergunta: {question}")
-
-    response = llm.invoke([
-        {"role": "system", "content": system},
-        {"role": "user", "content": user}
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", f"""
+        Você é um assistente que responde somente perguntas sobre o curriculum vitae. 
+        Se a consulta não puder ser respondida com base no contexto fornecido ou se não souber a resposta, 
+        basta dizer que você não sabe  a resposta, não tente inventar uma resposta. Mantenha a resposta o mais concisa 
+        possível.
+        """),
+        MessagesPlaceholder(variable_name="history"),
+        ("human", "{input}")
     ])
 
-    res = response.content
-    return res
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, openai_api_key=api_key)
 
+    chain = prompt | llm
+
+    chain_with_memory = RunnableWithMessageHistory(
+        chain,
+        lambda session_id: memory_store.setdefault(session_id, ChatMessageHistory()),
+        input_messages_key="input",
+        history_messages_key="history"
+    )
+
+    return chain_with_memory.invoke(
+        {"input": f"contexto: {context}\npergunta: {question}"},
+        config={"configurable": {"session_id": session_id}}
+    ).content
+
+def get_chat_history(session_id: str) -> List[Dict[str, str]]:
+    history = memory_store.get(session_id)
+    if not history:
+        return []
+
+    return [
+        {"role": m.type, "content": m.content}
+        for m in history.messages
+    ]
