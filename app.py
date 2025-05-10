@@ -5,10 +5,10 @@ from dotenv import load_dotenv
 from logs.log_handler import create_log_directory, get_log_directory, logs_recording
 from service.process_service import (load_pdf_pages,  extract_experience_and_education_info,
                                      extract_personal_and_experience_info,transform_dict,
-                                     normalize_text, start_faiss,research_faiss, api_chat)
+                                     normalize_text, start_faiss,research_faiss, api_chat_with_memory,get_chat_history)
 import json
 from flask import session
-
+from uuid import uuid4
 
 
 app = Flask(__name__)
@@ -137,7 +137,13 @@ def chat():
 
         answer_db = research_faiss(api_key, filter_to_db, question)
 
-        response_chat = api_chat(question, api_key, answer_db)
+
+        session_id = session.get("user_id")
+        if not session_id:
+            session_id = str(uuid4())
+            session["user_id"] = session_id
+
+        response_chat = api_chat_with_memory(question, answer_db, session_id, api_key)
 
         return jsonify({
             "status": "sucesso",
@@ -148,6 +154,25 @@ def chat():
         error_message = "Erro inesperado no servidor"
         logs_recording(json.dumps({'error': error_message, 'exception': str(e)}), log_path)
         return jsonify({'error': error_message}), 500
+
+@app.route('/chat/historico', methods=['GET'])
+def chat_history():
+    try:
+        session_id = session.get("user_id")
+        if not session_id:
+            return jsonify({"error": "Nenhuma sessão iniciada."}), 400
+
+        historical = get_chat_history(session_id)
+
+        return jsonify({
+            "status": "sucesso",
+            "historico": historical
+        })
+
+    except Exception as e:
+        logs_recording(json.dumps({'error': 'Erro ao obter histórico', 'exception': str(e)}), log_path)
+        return jsonify({'error': 'Erro ao obter histórico'}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
